@@ -600,3 +600,178 @@ class DoubleRectangle(Scene):
         if attempts >= max_attempts:
             raise RuntimeError("Unable to place all particles without overlap after many attempts.")
 
+
+class Triangle(Scene):
+    def __init__(self, base: float, height: float, angle: float = 0) -> None:
+        """
+        Initialize a triangular scene with specified base, height, and angle.
+        
+        :param base: Base length of the triangle.
+        :param height: Height of the triangle.
+        :param angle: Angle between the base and the line to the top vertex (in radians), default is 0.
+        """
+        super().__init__(width=base, height=height, cell_size=base / 20)
+        self.base = base
+        self.height = height
+        self.angle = angle
+        self.vertices = self._calculate_vertices()
+
+    def _calculate_vertices(self) -> np.ndarray:
+        """
+        Calculate the vertices of the triangle based on base, height, and angle.
+        
+        :return: numpy array of shape (3, 2) containing the x, y coordinates of the vertices.
+        """
+        half_base = self.base / 2
+        top_x = half_base - self.height * np.tan(self.angle)
+        vertices = np.array([
+            [0, 0],
+            [self.base, 0],
+            [top_x, self.height]
+        ])
+        
+        return vertices
+
+    def _is_point_in_triangle(self, point: np.ndarray, radius: float = 0) -> bool:
+        """
+        Check if a point (with optional radius) is inside the triangle.
+        
+        :param point: The point to check.
+        :param radius: The radius of the particle (for boundary checking).
+        :return: True if the point is inside the triangle, False otherwise.
+        """
+        def sign(p1, p2, p3):
+            return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+        
+        v1, v2, v3 = self.vertices
+        d1 = sign(point, v1, v2)
+        d2 = sign(point, v2, v3)
+        d3 = sign(point, v3, v1)
+        
+        has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+        has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+        
+        # Check if the point is inside the triangle
+        is_inside = not (has_neg and has_pos)
+        
+        # If radius is provided, check if the circle is completely inside the triangle
+        if radius > 0 and is_inside:
+            for edge in [(v1, v2), (v2, v3), (v3, v1)]:
+                if self._point_to_line_distance(point, edge[0], edge[1]) < radius:
+                    return False
+        
+        return is_inside
+
+    def _generate_random_position(self) -> np.ndarray:
+        """
+        Generate a random position within the triangle.
+        
+        :return: numpy array of shape (2,) containing the x, y coordinates of the random position.
+        """
+        r1 = np.random.random()
+        r2 = np.random.random()
+        if r1 + r2 > 1:
+            r1 = 1 - r1
+            r2 = 1 - r2
+        v1, v2, v3 = self.vertices
+        return (1 - r1 - r2) * v1 + r1 * v2 + r2 * v3
+    
+    
+
+    def check_wall_collision(self, particle: Particle, dt: float) -> None:
+        """
+        Check and resolve wall collisions for a particle in the triangular scene.
+        
+        :param particle: The particle to check for wall collision.
+        :param dt: Time step for continuous collision detection.
+        """
+        next_position = particle.position + particle.velocity * dt
+
+        v1, v2, v3 = self.vertices
+        edges = [(v1, v2), (v2, v3), (v3, v1)]
+        
+        for edge in edges:
+            edge_vector = edge[1] - edge[0]
+            normal = np.array([-edge_vector[1], edge_vector[0]])
+            normal /= np.linalg.norm(normal)
+            
+            # Check if the particle is colliding with this edge
+            distance = self._point_to_line_distance(next_position, edge[0], edge[1])
+            if distance < particle.radius:
+                # Reflect the velocity
+                particle.velocity -= 2 * np.dot(particle.velocity, normal) * normal
+                
+                # Move the particle away from the edge
+                overlap = particle.radius - distance
+                particle.position += overlap * normal
+
+    def _point_to_line_distance(self, point: np.ndarray, line_start: np.ndarray, line_end: np.ndarray) -> float:
+        """
+        Calculate the distance from a point to a line segment.
+        
+        :param point: The point to calculate the distance from.
+        :param line_start: The start point of the line segment.
+        :param line_end: The end point of the line segment.
+        :return: The distance from the point to the line segment.
+        """
+        line_vec = line_end - line_start
+        point_vec = point - line_start
+        line_len = np.linalg.norm(line_vec)
+        line_unitvec = line_vec / line_len
+        point_vec_scaled = point_vec / line_len
+        t = np.dot(line_unitvec, point_vec_scaled)
+        t = max(0.0, min(1.0, t))
+        nearest = line_start + line_unitvec * t * line_len
+        dist = np.linalg.norm(point - nearest)
+        return dist
+    
+
+
+    def add_particle(self, particle: Particle) -> None:
+        """
+        Add a particle to the triangle, ensuring it is within bounds.
+        
+        :param particle: The particle to be added.
+        :raises ValueError: If the particle is out of bounds.
+        """
+        if self._is_valid_particle_(particle):
+            self.particles.append(particle)
+        else:
+            raise ValueError("Particle out of bounds")
+
+    def _is_valid_particle_(self, particle: Particle) -> bool:
+        """
+        Check if a particle can be placed in the triangle without overlap or out of bounds.
+        
+        :param particle: The particle to check.
+        :return: True if the particle is valid, False otherwise.
+        """
+        if not self._is_point_in_triangle(particle.position, particle.radius):
+            return False
+        for other_particle in self.particles:
+            if self.particles_overlap(particle, other_particle):
+                return False
+        return True
+
+    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float)) -> None:
+        """
+        Generate a given number of particles with random positions, velocities, radius, and density within the triangle.
+        
+        :param num_particles: Number of particles to generate.
+        :param radius_range: Tuple of (min_radius, max_radius) for particle radii.
+        :param density_range: Tuple of (min_density, max_density) for particle densities.
+        :raises RuntimeError: If unable to place all particles without overlap after many attempts.
+        """
+        max_attempts = 1000
+        attempts = 0
+        while len(self.particles) < num_particles and attempts < max_attempts:
+            position = self._generate_random_position()
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * 100
+            radius = random.uniform(*radius_range)
+            density = random.uniform(*density_range)
+            new_particle = Particle(position, velocity, color=tuple(np.random.uniform(0, 1, 3)), radius=radius, density=density)
+            if self._is_valid_particle_(new_particle):
+                self.particles.append(new_particle)
+            attempts += 1
+        if attempts >= max_attempts:
+            raise RuntimeError("Unable to place all particles without overlap after many attempts.")
