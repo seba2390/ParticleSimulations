@@ -415,3 +415,188 @@ class Circle(Scene):
             attempts += 1
         if attempts >= max_attempts:
             raise RuntimeError("Unable to place all particles without overlap after many attempts.")
+        
+
+
+class DoubleRectangle(Scene):
+    def __init__(self, left_dims: (float, float), right_dims: (float, float), pipe_dims: (float, float)):
+        """
+        Initialize a DoubleRectangle with two side-by-side rectangular containers connected by a pipe.
+        
+        :param left_dims: Tuple (width, height) for the left container.
+        :param right_dims: Tuple (width, height) for the right container.
+        :param pipe_dims: Tuple (width, height) for the pipe connecting the two containers.
+        """
+        left_width, left_height = left_dims
+        right_width, right_height = right_dims
+        pipe_width, pipe_height = pipe_dims
+
+        total_width = left_width + right_width + pipe_width
+        max_height = max(left_height, right_height)
+
+        super().__init__(total_width, max_height, cell_size=min(left_width, right_width) / 20)
+
+        self.left_width = left_width
+        self.left_height = left_height
+        self.right_width = right_width
+        self.right_height = right_height
+        self.pipe_width = pipe_width
+        self.pipe_height = pipe_height
+        self.epsilon = 1e-9  # Floating-point tolerance
+
+    def is_valid_particle(self, particle: Particle) -> bool:
+        """
+        Check if a particle can be placed in the rectangle without overlapping other particles.
+        
+        :param particle: The particle to check.
+        :return: True if the particle is valid, False otherwise.
+        """
+       
+        for other_particle in self.particles:
+            if self.particles_overlap(particle, other_particle):
+                return False
+        return True
+    
+    def add_particle(self, particle: Particle, location: str):
+        """
+        Add a particle to either the left or right container, or allow it to pass through the pipe region.
+        
+        :param particle: The particle to add.
+        :param location: 'left', 'right', or 'split' to indicate where the particles are generated.
+        """
+        if location == 'left':
+            if self._is_in_left_container_(particle):
+                self.particles.append(particle)
+            else:
+                raise ValueError("Particle out of bounds in left container")
+
+        elif location == 'right':
+            if self._is_in_right_container_(particle):
+                self.particles.append(particle)
+            else:
+                raise ValueError("Particle out of bounds in right container")
+
+        elif location == 'split':
+            if random.random() < 0.5:
+                if self._is_in_left_container_(particle):
+                    self.particles.append(particle)
+                else:
+                    if self._is_in_right_container_(particle):
+                        self.particles.append(particle)
+        else:
+            raise ValueError("Invalid location. Choose 'left', 'right', or 'split'.")
+
+    def _is_in_left_container_(self, particle: Particle) -> bool:
+        """
+        Check if the particle is within the bounds of the left container.
+        """
+        x, y = particle.position
+        return (particle.radius <= x <= self.left_width - particle.radius and 
+                particle.radius <= y <= self.left_height - particle.radius)
+
+    def _is_in_right_container_(self, particle: Particle) -> bool:
+        """
+        Check if the particle is within the bounds of the right container.
+        """
+        x, y = particle.position
+        return (self.left_width + self.pipe_width + particle.radius <= x <= self.left_width + self.pipe_width + self.right_width - particle.radius and 
+                particle.radius <= y <= self.right_height - particle.radius)
+
+    def _is_in_pipe_(self, particle: Particle) -> bool:
+        """
+        Check if the particle is within the bounds of the pipe.
+        """
+        x, y = particle.position
+        return (self.left_width <= x <= self.left_width + self.pipe_width and 
+                self.left_height / 2 - self.pipe_height / 2 <= y <= self.left_height / 2 + self.pipe_height / 2)
+
+    def check_wall_collision(self, particle: Particle, dt: float):
+        """
+        Check and handle wall collisions in either the left or right container, or the pipe region.
+        """
+        next_position = particle.position + particle.velocity * dt
+        x, y = next_position
+
+        # Left container wall collisions
+        if x - particle.radius < 0:  # Left wall
+            particle.velocity[0] = -particle.velocity[0]
+            next_position[0] = particle.radius
+        elif self.left_width - particle.radius < x < self.left_width + particle.radius:  # Near right wall of left container
+            if y < self.left_height / 2 - self.pipe_height / 2 or y > self.left_height / 2 + self.pipe_height / 2:
+                particle.velocity[0] = -particle.velocity[0]
+                next_position[0] = self.left_width - particle.radius
+
+        # Right container wall collisions
+        elif self.left_width + self.pipe_width - particle.radius < x < self.left_width + self.pipe_width + particle.radius:  # Near left wall of right container
+            if y < self.right_height / 2 - self.pipe_height / 2 or y > self.right_height / 2 + self.pipe_height / 2:
+                particle.velocity[0] = -particle.velocity[0]
+                next_position[0] = self.left_width + self.pipe_width + particle.radius
+        elif x + particle.radius > self.left_width + self.pipe_width + self.right_width:  # Right wall
+            particle.velocity[0] = -particle.velocity[0]
+            next_position[0] = self.left_width + self.pipe_width + self.right_width - particle.radius
+
+        # Vertical collisions
+        if x <= self.left_width:  # Left container
+            if y - particle.radius < 0 or y + particle.radius > self.left_height:
+                particle.velocity[1] = -particle.velocity[1]
+                next_position[1] = particle.radius if y < self.left_height / 2 else self.left_height - particle.radius
+        elif x >= self.left_width + self.pipe_width:  # Right container
+            if y - particle.radius < 0 or y + particle.radius > self.right_height:
+                particle.velocity[1] = -particle.velocity[1]
+                next_position[1] = particle.radius if y < self.right_height / 2 else self.right_height - particle.radius
+        else:  # Pipe region
+            if y - particle.radius < self.left_height / 2 - self.pipe_height / 2 or y + particle.radius > self.left_height / 2 + self.pipe_height / 2:
+                particle.velocity[1] = -particle.velocity[1]
+                next_position[1] = (self.left_height / 2 - self.pipe_height / 2 + particle.radius 
+                                    if y < self.left_height / 2 
+                                    else self.left_height / 2 + self.pipe_height / 2 - particle.radius)
+
+        # Update particle position after handling collisions
+        particle.position = next_position
+
+
+    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), location: str):
+        """
+        Generate particles in either the left, right container, or split between them.
+        :param num_particles: Number of particles to generate.
+        :param radius_range: Range of particle radii.
+        :param density_range: Range of particle densities.
+        :param location: 'left', 'right', or 'split' to indicate where the particles are generated.
+        """
+        max_attempts = 1000
+        attempts = 0
+        while len(self.particles) < num_particles and attempts < max_attempts:
+            if location == 'split':
+                location_choice = 'left' if random.random() < 0.5 else 'right'
+            else:
+                location_choice = location
+
+            position = np.array([
+                random.uniform(0, self.left_width) if location_choice == 'left'
+                else random.uniform(self.left_width + self.pipe_width, self.left_width + self.pipe_width + self.right_width),
+                random.uniform(0, self.left_height if location_choice == 'left' else self.right_height)
+            ])
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * 100
+            radius = random.uniform(*radius_range)
+            density = random.uniform(*density_range)
+
+            # Assign color based on location and 'split' option
+            if location == 'split':
+                color = (0, 0, 1) if location_choice == 'left' else (0, 1, 0)  # Blue for left, Green for right
+            else:
+                color = tuple(np.random.uniform(0, 1, 3))  # Random color for non-split options
+
+            new_particle = Particle(position, velocity, color=color, radius=radius, density=density)
+
+            if location_choice == 'left' and self._is_in_left_container_(new_particle):
+                if self.is_valid_particle(new_particle):
+                    self.particles.append(new_particle)
+            elif location_choice == 'right' and self._is_in_right_container_(new_particle):
+                if self.is_valid_particle(new_particle):
+                    self.particles.append(new_particle)
+
+            attempts += 1
+
+        if attempts >= max_attempts:
+            raise RuntimeError("Unable to place all particles without overlap after many attempts.")
+
