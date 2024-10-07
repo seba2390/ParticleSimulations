@@ -2,6 +2,9 @@ from abc import ABC, abstractmethod
 import random
 import numpy as np
 
+#TODO: Fix the grid cell iterations such that a pair of grid cells are not checked against each other multiple times, i.e. if A is neighbour to B don't check for collisions between them both when
+#TODO: Update the grid structure for the scene so that i it efficiently covers differnt shapes (and not just rectangles)
+
 class Particle:
     def __init__(self, position: np.ndarray, velocity: np.ndarray, color: str = 'black', 
                  radius: float = 1.0, density: float = 1.0) -> None:
@@ -134,20 +137,6 @@ class Scene(ABC):
         for particle in self.particles:
             self.add_to_grid(particle)
 
-    def get_neighboring_cells(self, i: int, j: int):
-        """
-        Get the neighboring cells (and the current cell) around grid position (i, j).
-        These neighboring cells will be checked for potential collisions.
-        
-        :param i: X index of the grid cell.
-        :param j: Y index of the grid cell.
-        :yield: A list of particles in each neighboring cell.
-        """
-        for di in [-1, 0, 1]:
-            for dj in [-1, 0, 1]:
-                ni, nj = i + di, j + dj
-                if 0 <= ni < self.grid_width and 0 <= nj < self.grid_height:
-                    yield self.grid[ni][nj]
 
     def elastic_collision(self, p1: Particle, p2: Particle, dist: float, delta_pos: np.ndarray) -> None:
         """
@@ -197,12 +186,16 @@ class Scene(ABC):
                         p1, p2 = cell_particles[k], cell_particles[l]
                         self.check_and_resolve_collision(p1, p2)
 
-                # Check for collisions with neighboring cells
-                for neighbor_cell in self.get_neighboring_cells(i, j):
-                    for p1 in cell_particles:
-                        for p2 in neighbor_cell:
-                            if p1 is not p2:
-                                self.check_and_resolve_collision(p1, p2)
+                # Check for collisions with neighboring cells in the "forward" direction
+                for di in [0, 1]:
+                    for dj in [0, 1] if di == 0 else [-1, 0, 1]:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < self.grid_width and 0 <= nj < self.grid_height:
+                            neighbor_cell = self.grid[ni][nj]
+                            for p1 in cell_particles:
+                                for p2 in neighbor_cell:
+                                    if p1 is not p2:
+                                        self.check_and_resolve_collision(p1, p2)
 
     def check_and_resolve_collision(self, p1: Particle, p2: Particle) -> None:
         """
