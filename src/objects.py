@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
 import random
 import numpy as np
+import matplotlib.pyplot as plt
+
 
 #TODO: Update the grid structure for the scene so that i it efficiently covers differnt shapes (and not just rectangles)
 #TODO: Fix DoubleRectangle class - when the two boxes are different sizes, the transition between the pipe behaves weird
 #TODO: Optimize edge cell marking process
-#TODO: Fix optimized edge collision checking for cicle class (with no gravity)
-#TODO: Add generate_grid_cells() and mark_edge_cells() to DoubleRectangle and Triangle
+#TODO: Add generate_grid_cells() and mark_edge_cells() to DoubleRectangle 
+#TODO: Fix mark_edge_cells() for triangle with non-zero skewnewss (sometimes particles drop out as the cell marked is only very partially inside the triangle - almost no barrier)
 
 
 class Particle:
@@ -538,7 +540,6 @@ class Circle(Scene):
         """
         Mark the edge cells in the grid for a circular scene.
         The edge cells are those whose center lies approximately at the circle's boundary,
-        extending outwards by a thickness of 2 cells.
         """
         # Get the center of the grid (in terms of grid indices)
         center_x = self.grid_width / 2
@@ -637,7 +638,7 @@ class Circle(Scene):
         
         #### Has to fit at least approx 4 of the largest particles in single cell ####
         max_particle_diameter = max([2*p.radius for p in self.particles])
-        self.cell_size = 2 * max_particle_diameter
+        self.cell_size = 4 * max_particle_diameter
         self.grid_width = int(np.ceil(self.width / self.cell_size))
         self.grid_height = int(np.ceil(self.height / self.cell_size))
         # Initialize the grid
@@ -812,7 +813,7 @@ class DoubleRectangle(Scene):
 
             # Assign color based on location and 'split' option
             if location == 'split':
-                color = (0, 0, 1) if location_choice == 'left' else (0, 1, 0)  # Blue for left, Green for right
+                color = (1, 0, 0) if location_choice == 'left' else (0, 1, 0)  # Red for left, Green for right
             else:
                 color = tuple(np.random.uniform(0, 1, 3))  # Random color for non-split options
 
@@ -842,21 +843,131 @@ class DoubleRectangle(Scene):
         self.mark_edge_cells()
 
 
+
 class Triangle(Scene):
-    def __init__(self, base: float, height: float, angle: float = 0, vertical_gravity: float = 0.0, restitution: float = 1.0) -> None:
+    def __init__(self, base: float, height: float, skewness: float = 0.0, vertical_gravity: float = 0.0, restitution: float = 1.0) -> None:
         """
-        Initialize a triangular scene with specified base, height, and angle.
+        Initialize a triangular scene with specified base, height, and skewness.
         
         :param base: Base length of the triangle.
         :param height: Height of the triangle.
-        :param angle: Angle between the base and the line to the top vertex (in radians), default is 0.
+        :param skewness: Skewness of the triangle's top vertex (-1 is far left, 1 is far right, 0 is centered).
+        :param vertical_gravity: Gravity effect on the triangle.
+        :param restitution: Coefficient of restitution for particle collisions.
         """
-        super().__init__(width=base, height=height, vertical_gravity=vertical_gravity)
         self.base = base
         self.height = height
-        self.angle = angle
-        self.vertices = self._calculate_vertices()
+        self.skewness = skewness
         self.restitution = restitution
+
+        # Ensure skewness is clamped between -1 and 1
+        self.skewness = np.clip(self.skewness, -1, 1)
+
+        # Calculate the x-coordinate of the top vertex based on skewness
+        top_x = (2*self.skewness+1) * self.base/2  # Skewed horizontally from the midpoint
+
+        # Determine the minimal and maximal x-coordinates for the bounding box
+        self.min_x = min(0, top_x)
+        self.max_x = max(self.base, top_x)
+
+        # Calculate the width of the bounding box as the horizontal distance between the furthest points
+        self.width = self.max_x - self.min_x
+
+        # Calculate vertices
+        self.vertices = self._calculate_vertices(top_x)
+
+        # Call the parent class constructor after calculating width and height
+        super().__init__(width=self.width, height=self.height, vertical_gravity=vertical_gravity)
+
+    def _calculate_vertices(self, top_x: float):
+        """
+        Calculate the coordinates of the three vertices of the triangle.
+        
+        :param top_x: The x-coordinate of the top vertex.
+        :return: A list of tuples representing the vertices of the triangle.
+        """
+        # Lower-left vertex is fixed at (0, 0)
+        lower_left = [0, 0]
+        
+        # Lower-right vertex is at (base, 0)
+        lower_right = [self.base, 0]
+        
+        # Top vertex is at (top_x, height)
+        top = [top_x, self.height]
+        
+        return np.array([lower_left,
+                         lower_right,
+                         top])
+
+
+    def generate_grid_cells(self):
+            """
+            Generate grid cells for the triangle.
+            Each grid cell contains an empty list (for particles), a flag for being occupied, and a flag for being on the edge.
+            """
+            grid = [[[[], False, False] for _ in range(self.grid_height)] for _ in range(self.grid_width)]
+            
+            return grid
+
+    def mark_edge_cells(self) -> None:
+        """
+        Mark the edge cells in the grid for a triangular scene.
+        If a cell is marked as an edge, its neighboring cells are also marked as edges.
+        """
+        for i in range(self.grid_width):
+            for j in range(self.grid_height):
+                # First check if the cell is already marked as an edge
+                if not self.grid[i][j][2]:
+                    bottom_left_corner = (i*self.cell_size + self.min_x, j*self.cell_size)
+                    upper_right_corner = ((i+1)*self.cell_size + self.min_x, (j+1)*self.cell_size)
+                    
+                    # If the cell is on the edge, mark it and its neighbors as edge cells
+                    if self._is_on_edge(cell=(bottom_left_corner, upper_right_corner)): 
+                        self.grid[i][j][2] = True
+                        # Now mark the neighboring cells as edges
+                        self._mark_neighbors_as_edges(i, j)
+
+    def _mark_neighbors_as_edges(self, i: int, j: int) -> None:
+        """
+        Mark the nearest neighbors (including corners) of the cell at (i, j) as edges.
+        """
+        # Neighbors including diagonals (corner neighbors)
+        neighbors = [
+            (i-1, j),     # Left
+            (i+1, j),     # Right
+            (i, j-1),     # Bottom
+            (i, j+1),     # Top
+            (i-1, j-1),   # Bottom-left corner
+            (i-1, j+1),   # Top-left corner
+            (i+1, j-1),   # Bottom-right corner
+            (i+1, j+1)    # Top-right corner
+        ]
+        
+        # Iterate through the neighbors, ensuring they are within the grid bounds
+        for ni, nj in neighbors:
+            if 0 <= ni < self.grid_width and 0 <= nj < self.grid_height:
+                self.grid[ni][nj][2] = True
+
+
+    def _is_on_edge(self, cell) -> bool:
+        """
+        Check if a point is on the edge of the triangle.
+        
+        :param point: The point to check.
+        :return: True if the point is on the edge of the triangle, False otherwise.
+        """
+        v1, v2, v3 = self.vertices
+        # Check if the point is close to any of the triangle's edges
+        for line_segment in [(v1, v2), (v1, v3), (v2, v3)]:
+            line_start_x, line_start_y = line_segment[0]
+            line_end_x  , line_end_y   = line_segment[1]
+            if line_intersects_rectangle(rect_bottom_left_x= cell[0][0]   , rect_bottom_left_y=cell[0][1],
+                                         rect_top_right_x  = cell[1][0]   , rect_top_right_y  =cell[1][1],
+                                         line_start_x      = line_start_x , line_start_y      =line_start_y,
+                                         line_end_x        = line_end_x   , line_end_y        =line_end_y):
+                return True
+        return False 
+
 
     def check_wall_collision(self, particle: Particle, dt: float) -> None:
         """
@@ -884,22 +995,6 @@ class Triangle(Scene):
                 # Move the particle away from the edge
                 overlap = particle.radius - distance
                 particle.position += overlap * normal
-
-    def _calculate_vertices(self) -> np.ndarray:
-        """
-        Calculate the vertices of the triangle based on base, height, and angle.
-        
-        :return: numpy array of shape (3, 2) containing the x, y coordinates of the vertices.
-        """
-        half_base = self.base / 2
-        top_x = half_base - self.height * np.tan(self.angle)
-        vertices = np.array([
-            [0, 0],
-            [self.base, 0],
-            [top_x, self.height]
-        ])
-        
-        return vertices
 
     def _is_point_in_triangle(self, point: np.ndarray, radius: float = 0) -> bool:
         """
@@ -951,6 +1046,7 @@ class Triangle(Scene):
         nearest = line_start + line_unitvec * t * line_len
         dist = np.linalg.norm(point - nearest)
         return dist
+
     
     def _is_valid_particle_(self, particle: Particle) -> bool:
         """
@@ -1018,10 +1114,178 @@ class Triangle(Scene):
 
         #### Has to fit at least approx 4 of the largest particles in single cell ####
         max_particle_diameter = max([2*p.radius for p in self.particles])
-        self.cell_size = 2.5 * max_particle_diameter
+        self.cell_size = 2.35 * max_particle_diameter
         self.grid_width = int(np.ceil(self.width / self.cell_size))
         self.grid_height = int(np.ceil(self.height / self.cell_size))
+        print(self.grid_height)
         # Initialize the grid
         self.grid = self.generate_grid_cells()
         # Mark edge cells after initializing the grid
         self.mark_edge_cells()
+
+
+
+
+
+
+
+def draw_grid(ax,scene_obj):
+    if isinstance(scene_obj,Rectangle):
+
+        # Draw the grid
+        cell_size = scene_obj.cell_size  # Size of each grid cell
+
+        # Iterate over the grid and draw cells
+        for i in range(scene_obj.grid_width):
+            for j in range(scene_obj.grid_height):
+                # Determine the cell boundaries
+                x_start = i * cell_size
+                y_start = j * cell_size
+
+                # Check if this is an edge cell
+                if scene_obj.grid[i][j][2]:  # Edge cell
+                    rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
+                                        linewidth=1, edgecolor='red', linestyle='-', fill=False)
+                else:  # Non-edge cell
+                    rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
+                                        linewidth=1, edgecolor='black', linestyle='-', fill=False)
+
+                # Add the rectangle (cell) to the plot
+                ax.add_patch(rect)
+
+
+    elif isinstance(scene_obj,Circle):
+        # Draw the grid
+        cell_size = scene_obj.cell_size  # Size of each grid cell
+        grid_center_x = scene_obj.grid_width / 2
+        grid_center_y = scene_obj.grid_height / 2
+
+        # Iterate over the grid and draw cells, centered on the circle
+        for i in range(scene_obj.grid_width):
+            for j in range(scene_obj.grid_height):
+                # Determine the cell's center relative to the origin (0, 0)
+                cell_center_x = (i + 0.5 - grid_center_x) * cell_size
+                cell_center_y = (j + 0.5 - grid_center_y) * cell_size
+
+                # Determine the cell boundaries (based on the center)
+                x_start = cell_center_x - cell_size / 2
+                y_start = cell_center_y - cell_size / 2
+
+                # Check if this is an edge cell
+                if scene_obj.grid[i][j][2]:  # Edge cell
+                    rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
+                                        linewidth=1, edgecolor='red', linestyle='-', fill=False)
+                else:  # Non-edge cell
+                    rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
+                                        linewidth=1, edgecolor='black', linestyle='-', fill=False)
+
+                # Add the rectangle (cell) to the plot
+                ax.add_patch(rect)
+
+    elif isinstance(scene_obj, Triangle):
+        # Draw the grid for a triangle
+        cell_size = scene_obj.cell_size  # Size of each grid cell
+
+        # Calculate the minimum x-coordinate (shift) based on triangle vertices
+        min_x = min(scene_obj.vertices[:, 0])
+
+        # Iterate over the grid and draw cells
+        for i in range(scene_obj.grid_width):
+            for j in range(scene_obj.grid_height):
+                # Determine the cell boundaries, shift x_start by min_x to align with the triangle's bounding box
+                x_start = i * cell_size + min_x
+                y_start = j * cell_size
+
+                # Check if this is an edge cell
+                if scene_obj.grid[i][j][2]:  # Edge cell
+                    rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
+                                        linewidth=1, edgecolor='red', linestyle='-', fill=False)
+                else:  # Non-edge cell
+                    rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
+                                        linewidth=1, edgecolor='black', linestyle='-', fill=False)
+
+                # Add the rectangle (cell) to the plot
+                ax.add_patch(rect)
+
+
+
+def line_intersects_rectangle(rect_bottom_left_x: float, rect_bottom_left_y: float, rect_top_right_x: float, rect_top_right_y: float, 
+                              line_start_x: float, line_start_y: float, line_end_x: float, line_end_y: float) -> bool:
+    """
+    Check if a line segment intersects with a rectangle using the Axis-Aligned Bounding Box (AABB) method.
+
+    This function uses the Cohen-Sutherland line clipping algorithm to determine if the line segment 
+    defined by the endpoints (line_start_x, line_start_y) and (line_end_x, line_end_y) intersects with the rectangle defined by its 
+    bottom-left corner (rect_bottom_left_x, rect_bottom_left_y) and top-right corner (rect_top_right_x, rect_top_right_y).
+
+    Args:
+        rect_bottom_left_x (float): X-coordinate of the bottom-left corner of the rectangle.
+        rect_bottom_left_y (float): Y-coordinate of the bottom-left corner of the rectangle.
+        rect_top_right_x (float): X-coordinate of the top-right corner of the rectangle.
+        rect_top_right_y (float): Y-coordinate of the top-right corner of the rectangle.
+        line_start_x (float): X-coordinate of the starting point of the line segment.
+        line_start_y (float): Y-coordinate of the starting point of the line segment.
+        line_end_x (float): X-coordinate of the ending point of the line segment.
+        line_end_y (float): Y-coordinate of the ending point of the line segment.
+
+    Returns:
+        bool: True if the line segment intersects the rectangle, False otherwise.
+    """
+    # Ensure the rectangle coordinates are ordered correctly
+    rect_bottom_left_x, rect_top_right_x = min(rect_bottom_left_x, rect_top_right_x), max(rect_bottom_left_x, rect_top_right_x)
+    rect_bottom_left_y, rect_top_right_y = min(rect_bottom_left_y, rect_top_right_y), max(rect_bottom_left_y, rect_top_right_y)
+
+    # Check if line segment is completely outside the rectangle's bounding box
+    if max(line_start_x, line_end_x) < rect_bottom_left_x or min(line_start_x, line_end_x) > rect_top_right_x or max(line_start_y, line_end_y) < rect_bottom_left_y or min(line_start_y, line_end_y) > rect_top_right_y:
+        return False
+
+    # Check for intersection by using Cohen-Sutherland line clipping algorithm
+    # Define region codes for each point of the line segment
+    INSIDE = 0  # 0000
+    LEFT = 1    # 0001
+    RIGHT = 2   # 0010
+    BOTTOM = 4  # 0100
+    TOP = 8     # 1000
+
+    def compute_code(x: float, y: float) -> int:
+        code = INSIDE
+        if x < rect_bottom_left_x:
+            code |= LEFT
+        elif x > rect_top_right_x:
+            code |= RIGHT
+        if y < rect_bottom_left_y:
+            code |= BOTTOM
+        elif y > rect_top_right_y:
+            code |= TOP
+        return code
+
+    code1 = compute_code(line_start_x, line_start_y)
+    code2 = compute_code(line_end_x, line_end_y)
+
+    while True:
+        if code1 == 0 and code2 == 0:
+            return True  # Trivially inside
+        elif code1 & code2 != 0:
+            return False  # Trivially outside
+        else:
+            # Clip the line to the rectangle's bounding box
+            code_out = code1 if code1 != 0 else code2
+            if code_out & TOP:
+                x = line_start_x + (line_end_x - line_start_x) * (rect_top_right_y - line_start_y) / (line_end_y - line_start_y)
+                y = rect_top_right_y
+            elif code_out & BOTTOM:
+                x = line_start_x + (line_end_x - line_start_x) * (rect_bottom_left_y - line_start_y) / (line_end_y - line_start_y)
+                y = rect_bottom_left_y
+            elif code_out & RIGHT:
+                y = line_start_y + (line_end_y - line_start_y) * (rect_top_right_x - line_start_x) / (line_end_x - line_start_x)
+                x = rect_top_right_x
+            elif code_out & LEFT:
+                y = line_start_y + (line_end_y - line_start_y) * (rect_bottom_left_x - line_start_x) / (line_end_x - line_start_x)
+                x = rect_bottom_left_x
+
+            if code_out == code1:
+                line_start_x, line_start_y = x, y
+                code1 = compute_code(line_start_x, line_start_y)
+            else:
+                line_end_x, line_end_y = x, y
+                code2 = compute_code(line_end_x, line_end_y)
