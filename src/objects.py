@@ -661,10 +661,10 @@ class DoubleRectangle(Scene):
         right_width, right_height = right_dims
         pipe_width, pipe_height = pipe_dims
 
-        total_width = left_width + right_width + pipe_width
-        max_height = max(left_height, right_height)
+        self.total_width = left_width + right_width + pipe_width
+        self.max_height = max(left_height, right_height)
 
-        super().__init__(total_width, max_height, vertical_gravity=vertical_gravity)
+        super().__init__(self.total_width, self.max_height, vertical_gravity=vertical_gravity)
 
         self.left_width = left_width
         self.left_height = left_height
@@ -673,6 +673,143 @@ class DoubleRectangle(Scene):
         self.pipe_width = pipe_width
         self.pipe_height = pipe_height
         self.restitution = restitution
+
+        ### Left box ###
+        # Top line of the left container
+        left_top_line_start = (0, self.left_height)
+        left_top_line_end = (self.left_width, self.left_height)
+
+        # Bottom line of the left container
+        left_bottom_line_start = (0, 0)
+        left_bottom_line_end = (self.left_width, 0)
+
+        # Left vertical line of the left container
+        left_vertical_line_start = (0, 0)
+        left_vertical_line_end = (0, self.left_height)
+
+        # Right vertical line (top part) of the left container
+        left_right_top_line_start = (self.left_width, 0)
+        left_right_top_line_end = (self.left_width, self.left_height/2 - self.pipe_height/2)
+
+        # Right vertical line (bottom part) of the left container
+        left_right_bottom_line_start = (self.left_width, self.left_height/2 + self.pipe_height/2)
+        left_right_bottom_line_end = (self.left_width, self.left_height)
+
+
+        ### Right box ###
+        # Top line of the right container
+        right_top_line_start = (self.left_width + self.pipe_width, self.right_height)
+        right_top_line_end = (self.total_width, self.right_height)
+
+        # Bottom line of the right container
+        right_bottom_line_start = (self.left_width + self.pipe_width, 0)
+        right_bottom_line_end = (self.total_width, 0)
+
+        # Right vertical line of the right container
+        right_vertical_line_start = (self.total_width, 0)
+        right_vertical_line_end = (self.total_width, self.right_height)
+
+        # Left vertical line (top part) of the right container
+        right_left_top_line_start = (self.left_width + self.pipe_width, 0)
+        right_left_top_line_end = (self.left_width + self.pipe_width, self.left_height/2 - self.pipe_height/2)
+
+        # Left vertical line (bottom part) of the right container
+        right_left_bottom_line_start = (self.left_width + self.pipe_width, self.left_height/2 + self.pipe_height/2)
+        right_left_bottom_line_end = (self.left_width + self.pipe_width, self.right_height)
+
+
+        ### Pipe ###
+        # Top line of the pipe
+        pipe_top_line_start = (self.left_width, self.left_height/2 + self.pipe_height/2)
+        pipe_top_line_end = (self.left_width + self.pipe_width, self.left_height/2 + self.pipe_height/2)
+
+        # Bottom line of the pipe
+        pipe_bottom_line_start = (self.left_width, self.left_height/2 - self.pipe_height/2)
+        pipe_bottom_line_end = (self.left_width + self.pipe_width, self.left_height/2 - self.pipe_height/2)
+
+
+        self.line_segments = [
+                        (left_top_line_start, left_top_line_end),
+                        (left_bottom_line_start, left_bottom_line_end),
+                        (left_vertical_line_start, left_vertical_line_end),
+                        (left_right_top_line_start, left_right_top_line_end),
+                        (left_right_bottom_line_start, left_right_bottom_line_end),
+                        (right_top_line_start, right_top_line_end),
+                        (right_bottom_line_start, right_bottom_line_end),
+                        (right_vertical_line_start, right_vertical_line_end),
+                        (right_left_top_line_start, right_left_top_line_end),
+                        (right_left_bottom_line_start, right_left_bottom_line_end),
+                        (pipe_top_line_start, pipe_top_line_end),
+                        (pipe_bottom_line_start, pipe_bottom_line_end)
+                        ]
+
+
+    def generate_grid_cells(self):
+            """
+            Generate grid cells for the scene.
+            Each grid cell contains an empty list (for particles), a flag for being occupied, and a flag for being on the edge.
+            """
+            grid = [[[[], False, False] for _ in range(self.grid_height)] for _ in range(self.grid_width)]
+            
+            return grid
+
+    def mark_edge_cells(self) -> None:
+        """
+        Mark the edge cells in the grid for the scene.
+        If a cell is marked as an edge, its neighboring cells are also marked as edges.
+        """
+        for i in range(self.grid_width):
+            for j in range(self.grid_height):
+                self.grid[i][j][2] = True
+                """# First check if the cell is already marked as an edge
+                if not self.grid[i][j][2]:
+                    bottom_left_corner = (i*self.cell_size, j*self.cell_size)
+                    upper_right_corner = ((i+1)*self.cell_size, (j+1)*self.cell_size)
+                    
+                    # If the cell is on the edge, mark it and its neighbors as edge cells
+                    if self._is_on_edge(cell=(bottom_left_corner, upper_right_corner)): 
+                        self.grid[i][j][2] = True
+                        # Now mark the neighboring cells as edges
+                        self._mark_neighbors_as_edges(i, j)"""
+
+    def _is_on_edge(self, cell) -> bool:
+            """
+            Check if a point is on the edge of the two boxes or the pipe in between.
+            
+            :param point: The point to check.
+            :return: True if the point is on the edge of the scene, False otherwise.
+            """
+
+            # Check if the point is close to any of the boxes's edges
+            for line_segment in self.line_segments:
+                line_start_x, line_start_y = line_segment[0]
+                line_end_x  , line_end_y   = line_segment[1]
+                if line_intersects_rectangle(rect_bottom_left_x= cell[0][0]   , rect_bottom_left_y=cell[0][1],
+                                            rect_top_right_x  = cell[1][0]   , rect_top_right_y  =cell[1][1],
+                                            line_start_x      = line_start_x , line_start_y      =line_start_y,
+                                            line_end_x        = line_end_x   , line_end_y        =line_end_y):
+                    return True
+            return False 
+    def _mark_neighbors_as_edges(self, i: int, j: int) -> None:
+        """
+        Mark the nearest neighbors (including corners) of the cell at (i, j) as edges.
+        """
+        # Neighbors including diagonals (corner neighbors)
+        neighbors = [
+            (i-1,   j),     # Left
+            (i+1,   j),     # Right
+            (i  , j-1),     # Bottom
+            (i  , j+1),     # Top
+            (i-1, j-1),     # Bottom-left corner
+            (i-1, j+1),     # Top-left corner
+            (i+1, j-1),     # Bottom-right corner
+            (i+1, j+1)      # Top-right corner
+        ]
+        
+        # Iterate through the neighbors, ensuring they are within the grid bounds
+        for ni, nj in neighbors:
+            if 0 <= ni < self.grid_width and 0 <= nj < self.grid_height:
+                self.grid[ni][nj][2] = True
 
     def check_wall_collision(self, particle: Particle, dt: float):
         """
@@ -1129,8 +1266,8 @@ class Triangle(Scene):
 
 
 
-def draw_grid(ax,scene_obj):
-    if isinstance(scene_obj,Rectangle):
+def draw_grid(ax,scene_obj,lw:float = 0.2):
+    if isinstance(scene_obj,Rectangle) or isinstance(scene_obj, DoubleRectangle):
 
         # Draw the grid
         cell_size = scene_obj.cell_size  # Size of each grid cell
@@ -1145,10 +1282,10 @@ def draw_grid(ax,scene_obj):
                 # Check if this is an edge cell
                 if scene_obj.grid[i][j][2]:  # Edge cell
                     rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
-                                        linewidth=1, edgecolor='red', linestyle='-', fill=False)
+                                        linewidth=1, edgecolor='red', linestyle='-', lw=lw, fill=False)
                 else:  # Non-edge cell
                     rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
-                                        linewidth=1, edgecolor='black', linestyle='-', fill=False)
+                                        linewidth=1, edgecolor='black', linestyle='-', lw=lw,fill=False)
 
                 # Add the rectangle (cell) to the plot
                 ax.add_patch(rect)
@@ -1174,10 +1311,10 @@ def draw_grid(ax,scene_obj):
                 # Check if this is an edge cell
                 if scene_obj.grid[i][j][2]:  # Edge cell
                     rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
-                                        linewidth=1, edgecolor='red', linestyle='-', fill=False)
+                                        linewidth=1, edgecolor='red', linestyle='-', lw=lw,fill=False)
                 else:  # Non-edge cell
                     rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
-                                        linewidth=1, edgecolor='black', linestyle='-', fill=False)
+                                        linewidth=1, edgecolor='black', linestyle='-', lw=lw,fill=False)
 
                 # Add the rectangle (cell) to the plot
                 ax.add_patch(rect)
@@ -1199,10 +1336,10 @@ def draw_grid(ax,scene_obj):
                 # Check if this is an edge cell
                 if scene_obj.grid[i][j][2]:  # Edge cell
                     rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
-                                        linewidth=1, edgecolor='red', linestyle='-', fill=False)
+                                        linewidth=1, edgecolor='red', linestyle='-', lw=lw,fill=False)
                 else:  # Non-edge cell
                     rect = plt.Rectangle((x_start, y_start), cell_size, cell_size, 
-                                        linewidth=1, edgecolor='black', linestyle='-', fill=False)
+                                        linewidth=1, edgecolor='black', linestyle='-', lw=lw,fill=False)
 
                 # Add the rectangle (cell) to the plot
                 ax.add_patch(rect)
