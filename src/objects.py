@@ -343,7 +343,7 @@ class Rectangle(Scene):
         attempts = 0
         while len(self.particles) < num_particles and attempts < max_attempts:
             position = np.array([random.uniform(0, self.width), random.uniform(0, self.height)])
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * 100
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*10 
             radius = random.uniform(*radius_range)
             density = random.uniform(*density_range)
             new_particle = Particle(position, velocity, 
