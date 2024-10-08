@@ -2,7 +2,9 @@ from abc import ABC, abstractmethod
 import random
 import numpy as np
 
+#TODO: Fix fast and buggy method in resolve_collision in Scene ABC.
 #TODO: Update the grid structure for the scene so that i it efficiently covers differnt shapes (and not just rectangles)
+#TODO: Fix DoubleRectangle class - when the two boxes are different sizes, the transition between the pipe behaves weird
 
 class Particle:
     def __init__(self, position: np.ndarray, velocity: np.ndarray, color: str = 'black', 
@@ -68,7 +70,6 @@ class Scene(ABC):
         
         # Initialize the grid as a 2D list of empty lists, each cell containing particle lists
         self.grid = [[[] for _ in range(self.grid_height)] for _ in range(self.grid_width)]
-        self.epsilon = 1e-9  # Tolerance to avoid floating-point precision issues
 
         self.vertical_gravity = vertical_gravity
 
@@ -137,75 +138,98 @@ class Scene(ABC):
 
     def collision(self, p1: Particle, p2: Particle, dist: float, delta_pos: np.ndarray, restitution: float) -> None:
         """
-        Resolve a collision between two particles, updating their velocities and positions.
+        Resolve a collision between two particles, updating their velocities and positions
+        according to elastic collision principles.
         
         :param p1: First particle.
         :param p2: Second particle.
         :param dist: Distance between the particles.
         :param delta_pos: Vector from p2 to p1.
+        :param restitution: Coefficient of restitution, determining elasticity.
         """
-        delta_vel = p1.velocity - p2.velocity
+        # Normalize the delta position vector to get the collision normal
         norm_delta_pos = delta_pos / dist
-        velocity_along_axis = np.dot(delta_vel, norm_delta_pos)
 
-        # If the particles are moving apart, skip the collision resolution (Early exit)
-        if velocity_along_axis > 0:
+        # Compute the relative velocity between the particles
+        delta_vel = p1.velocity - p2.velocity
+
+        # Compute the velocity component along the collision normal
+        velocity_along_normal = np.dot(delta_vel, norm_delta_pos)
+
+        # If the particles are moving apart (velocity along normal is positive), skip collision resolution
+        if velocity_along_normal > 0:
             return
 
-        # Compute impulse magnitude for elastic collision
-        impulse_magnitude = (2 * velocity_along_axis) / (p1.mass + p2.mass)
+        # Calculate the impulse magnitude for a perfectly elastic collision
+        # (taking into account the coefficient of restitution)
+        impulse_magnitude = (-(1 + restitution) * velocity_along_normal) / (1 / p1.mass + 1 / p2.mass)
 
-        # Update velocities and apply the restitution coefficient (elastic: resitution = 1, inelastic: 0 < restitution < 1)
-        p1.velocity -= restitution * impulse_magnitude * p2.mass * norm_delta_pos
-        p2.velocity += restitution * impulse_magnitude * p1.mass * norm_delta_pos
+        # Calculate the impulse vector
+        impulse = impulse_magnitude * norm_delta_pos
 
-        # Correct particle positions to resolve any overlap
-        overlap = p1.radius + p2.radius - dist + self.epsilon
+        # Update velocities based on the impulse
+        p1.velocity += impulse / p1.mass
+        p2.velocity -= impulse / p2.mass
+
+        # Position correction to prevent overlap 
+        overlap = (p1.radius + p2.radius) - dist 
         correction = norm_delta_pos * (overlap / 2)
         p1.position += correction
         p2.position -= correction
+
+
 
     def resolve_collisions(self) -> None:
         """
         Check and resolve collisions between particles using grid-based spatial optimization,
         with additional sorting along an axis for further optimization.
         """
+
+        ##### Fast but buggy method #####
         # Update the grid based on the new particle positions
         self.update_grid()
 
         # Iterate through the grid cells
         for i in range(self.grid_width):
             for j in range(self.grid_height):
-                cell_particles = self.grid[i][j]
+                
+                # Only check if cell has particles
+                if len(self.grid[i][j]) > 0:
 
-                # Sort particles in the current cell by x-axis (or y-axis)
-                cell_particles.sort(key=lambda p: p.position[0])  # Sort by x-axis, can switch to y-axis if desired
+                    # Sort particles in the current cell by x-axis
+                    self.grid[i][j].sort(key=lambda p: p.position[0])
 
-                # Check for collisions within the same cell
-                for k in range(len(cell_particles)):
-                    p1 = cell_particles[k]
-                    for l in range(k + 1, len(cell_particles)):
-                        p2 = cell_particles[l]
+                    # Check for collisions within the same cell
+                    for k in range(len(self.grid[i][j])):
+                        for l in range(k + 1, len(self.grid[i][j])):
+                            # Early exit if the distance along the x-axis exceeds the sum of radii
+                            if self.grid[i][j][l].position[0] - self.grid[i][j][k].position[0] > (self.grid[i][j][k].radius + self.grid[i][j][l].radius):
+                                break
 
-                        # Early exit if the distance along the x-axis exceeds the sum of radii
-                        if p2.position[0] - p1.position[0] > (p1.radius + p2.radius):
-                            break
+                            self.check_and_resolve_collision(self.grid[i][j][l], self.grid[i][j][k])
 
-                        # Check and resolve the collision if necessary
-                        self.check_and_resolve_collision(p1, p2)
-
-                # Check for collisions with neighboring cells in the "forward" direction
-                for di in [0, 1]:
-                    for dj in [0, 1] if di == 0 else [-1, 0, 1]:
+                    # Check for collisions with neighboring cells
+                    neighbours = [(-1,-1),(-1,0),(-1,1), # Column behind
+                                ( 0,-1),( 0,1),          # Below and Above
+                                ( 1,-1),( 1,0),( 1,1)]   # Column in front 
+                    
+                    for (di, dj) in neighbours:
                         ni, nj = i + di, j + dj
+                        # Check not out of bounds
                         if 0 <= ni < self.grid_width and 0 <= nj < self.grid_height:
                             neighbor_cell = self.grid[ni][nj]
-                            for p1 in cell_particles:
-                                for p2 in neighbor_cell:
-                                    if p1 is not p2:
-                                        # Only check neighboring cell particles that could collide along the x-axis
-                                        if abs(p2.position[0] - p1.position[0]) <= (p1.radius + p2.radius):
-                                            self.check_and_resolve_collision(p1, p2)
+                            for k in range(len(self.grid[i][j])):
+                                for l in range(len(neighbor_cell)):
+                                    # Avoid checking against itself
+                                    if not np.all(self.grid[i][j][k].position==neighbor_cell[l].position):
+                                        # Use a more precise distance check
+                                        if np.linalg.norm(self.grid[i][j][k].position - neighbor_cell[l].position) <= (self.grid[i][j][k].radius + neighbor_cell[l].radius):
+                                            self.check_and_resolve_collision(self.grid[i][j][k], neighbor_cell[l])
+
+        ##### Slow but working method #####
+        """for i in range(len(self.particles)):
+            for j in range(i+1,len(self.particles)):
+                self.check_and_resolve_collision(self.particles[i], self.particles[j])"""
 
 
     def check_and_resolve_collision(self, p1: Particle, p2: Particle) -> None:
@@ -217,11 +241,10 @@ class Scene(ABC):
         """
         delta_pos = p1.position - p2.position
         dist = np.linalg.norm(delta_pos)
-        restitution = (p1.restitution + p2.restitution) / 2
-
 
         # If particles overlap, resolve the collision
-        if dist < (p1.radius + p2.radius - self.epsilon):
+        if dist < (p1.radius + p2.radius):
+            restitution = (p1.restitution + p2.restitution) / 2
             self.collision(p1, p2, dist, delta_pos, restitution=restitution)
 
 
@@ -233,10 +256,7 @@ class Scene(ABC):
         for particle in self.particles:
             # Apply gravity if it's set
             if self.vertical_gravity != 0.0:
-                #print("v berfore: ", particle.velocity)
                 particle.velocity[1] -= self.vertical_gravity * dt
-                #print("v after: ", particle.velocity)
-                #print("="*50)
 
             # Check and resolve wall collisions before moving particles
             self.check_wall_collision(particle, dt)
@@ -275,31 +295,38 @@ class Rectangle(Scene):
     def check_wall_collision(self, particle: Particle, dt: float) -> None:
         """
         Check and resolve wall collisions for a particle in the rectangular scene.
-        
         :param particle: The particle to check for wall collision.
         :param dt: Time step for continuous collision detection.
         """
         next_position = particle.position + particle.velocity * dt
 
-        # Check for left or right wall collisions
+        # Check for left wall collision
         if next_position[0] - particle.radius < 0:
-            # Reflect velocity for left wall with restitution
+            penetration = particle.radius - next_position[0]
+            particle.position[0] = particle.radius + penetration * particle.restitution
             particle.velocity[0] = -particle.velocity[0] * particle.restitution
-            particle.position[0] = 2 * particle.radius - particle.position[0]
-        elif next_position[0] + particle.radius > self.width:
-            # Reflect velocity for right wall with restitution
-            particle.velocity[0] = -particle.velocity[0] * particle.restitution
-            particle.position[0] = 2 * (self.width - particle.radius) - particle.position[0]
 
-        # Check for top or bottom wall collisions
+        # Check for right wall collision
+        elif next_position[0] + particle.radius > self.width:
+            penetration = next_position[0] + particle.radius - self.width
+            particle.position[0] = self.width - particle.radius - penetration * particle.restitution
+            particle.velocity[0] = -particle.velocity[0] * particle.restitution
+
+        # Check for bottom wall collision
         if next_position[1] - particle.radius < 0:
-            # Reflect velocity for bottom wall with restitution
+            penetration = particle.radius - next_position[1]
+            particle.position[1] = particle.radius + penetration * particle.restitution
             particle.velocity[1] = -particle.velocity[1] * particle.restitution
-            particle.position[1] = 2 * particle.radius - particle.position[1]
+
+        # Check for top wall collision
         elif next_position[1] + particle.radius > self.height:
-            # Reflect velocity for top wall with restitution
+            penetration = next_position[1] + particle.radius - self.height
+            particle.position[1] = self.height - particle.radius - penetration * particle.restitution
             particle.velocity[1] = -particle.velocity[1] * particle.restitution
-            particle.position[1] = 2 * (self.height - particle.radius) - particle.position[1]
+
+        # Update position based on remaining time step
+        remaining_dt = dt * (1 - particle.restitution)
+        particle.position += particle.velocity * remaining_dt
 
 
     def add_particle(self, particle: Particle) -> None:
@@ -330,7 +357,7 @@ class Rectangle(Scene):
                 return False
         return True
     
-    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float)) -> None:
+    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), speed_scaling: float = 1) -> None:
         """
         Generate a given number of particles with random positions, velocities, radius, and density.
         
@@ -343,7 +370,7 @@ class Rectangle(Scene):
         attempts = 0
         while len(self.particles) < num_particles and attempts < max_attempts:
             position = np.array([random.uniform(0, self.width), random.uniform(0, self.height)])
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*10 
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*speed_scaling
             radius = random.uniform(*radius_range)
             density = random.uniform(*density_range)
             new_particle = Particle(position, velocity, 
@@ -416,7 +443,7 @@ class Circle(Scene):
         return True
 
     def generate_particles(self, num_particles: int, radius_range: (float, float), 
-                           density_range: (float, float)) -> None:
+                           density_range: (float, float), speed_scaling: float = 1) -> None:
         """
         Generate a given number of particles in the circular boundary.
         
@@ -431,7 +458,7 @@ class Circle(Scene):
             angle = random.uniform(0, 2 * np.pi)
             distance = random.uniform(0, self.radius)
             position = np.array([distance * np.cos(angle), distance * np.sin(angle)])
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * 100
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * speed_scaling
             radius = random.uniform(*radius_range)
             density = random.uniform(*density_range)
             new_particle = Particle(position, velocity, color=tuple(np.random.uniform(0, 1, 3)), radius=radius, density=density,
@@ -468,7 +495,6 @@ class DoubleRectangle(Scene):
         self.right_height = right_height
         self.pipe_width = pipe_width
         self.pipe_height = pipe_height
-        self.epsilon = 1e-9  # Floating-point tolerance
         self.restitution = restitution
 
     def check_wall_collision(self, particle: Particle, dt: float):
@@ -584,7 +610,7 @@ class DoubleRectangle(Scene):
 
 
 
-    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), location: str):
+    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), location: str, speed_scaling: float = 1):
         """
         Generate particles in either the left, right container, or split between them.
         :param num_particles: Number of particles to generate.
@@ -605,7 +631,7 @@ class DoubleRectangle(Scene):
                 else random.uniform(self.left_width + self.pipe_width, self.left_width + self.pipe_width + self.right_width),
                 random.uniform(0, self.left_height if location_choice == 'left' else self.right_height)
             ])
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * 100
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * speed_scaling
             radius = random.uniform(*radius_range)
             density = random.uniform(*density_range)
 
@@ -720,21 +746,6 @@ class Triangle(Scene):
         
         return is_inside
 
-    def _generate_random_position(self) -> np.ndarray:
-        """
-        Generate a random position within the triangle.
-        
-        :return: numpy array of shape (2,) containing the x, y coordinates of the random position.
-        """
-        r1 = np.random.random()
-        r2 = np.random.random()
-        if r1 + r2 > 1:
-            r1 = 1 - r1
-            r2 = 1 - r2
-        v1, v2, v3 = self.vertices
-        return (1 - r1 - r2) * v1 + r1 * v2 + r2 * v3
-    
-    
 
     def _point_to_line_distance(self, point: np.ndarray, line_start: np.ndarray, line_end: np.ndarray) -> float:
         """
@@ -756,18 +767,6 @@ class Triangle(Scene):
         dist = np.linalg.norm(point - nearest)
         return dist
     
-    def add_particle(self, particle: Particle) -> None:
-        """
-        Add a particle to the triangle, ensuring it is within bounds.
-        
-        :param particle: The particle to be added.
-        :raises ValueError: If the particle is out of bounds.
-        """
-        if self._is_valid_particle_(particle):
-            self.particles.append(particle)
-        else:
-            raise ValueError("Particle out of bounds")
-
     def _is_valid_particle_(self, particle: Particle) -> bool:
         """
         Check if a particle can be placed in the triangle without overlap or out of bounds.
@@ -781,8 +780,35 @@ class Triangle(Scene):
             if self.particles_overlap(particle, other_particle):
                 return False
         return True
+    
 
-    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float)) -> None:
+    def _generate_random_position(self) -> np.ndarray:
+        """
+        Generate a random position within the triangle.
+        
+        :return: numpy array of shape (2,) containing the x, y coordinates of the random position.
+        """
+        r1 = np.random.random()
+        r2 = np.random.random()
+        if r1 + r2 > 1:
+            r1 = 1 - r1
+            r2 = 1 - r2
+        v1, v2, v3 = self.vertices
+        return (1 - r1 - r2) * v1 + r1 * v2 + r2 * v3
+    
+    def add_particle(self, particle: Particle) -> None:
+        """
+        Add a particle to the triangle, ensuring it is within bounds.
+        
+        :param particle: The particle to be added.
+        :raises ValueError: If the particle is out of bounds.
+        """
+        if self._is_valid_particle_(particle):
+            self.particles.append(particle)
+        else:
+            raise ValueError("Particle out of bounds")
+
+    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), speed_scaling: float = 1) -> None:
         """
         Generate a given number of particles with random positions, velocities, radius, and density within the triangle.
         
@@ -795,7 +821,7 @@ class Triangle(Scene):
         attempts = 0
         while len(self.particles) < num_particles and attempts < max_attempts:
             position = self._generate_random_position()
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * 100
+            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * speed_scaling
             radius = random.uniform(*radius_range)
             density = random.uniform(*density_range)
             new_particle = Particle(position, velocity, color=tuple(np.random.uniform(0, 1, 3)), radius=radius, density=density,
