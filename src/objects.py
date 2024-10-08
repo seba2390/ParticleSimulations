@@ -7,8 +7,9 @@ import matplotlib.pyplot as plt
 #TODO: Update the grid structure for the scene so that i it efficiently covers differnt shapes (and not just rectangles)
 #TODO: Fix DoubleRectangle class - when the two boxes are different sizes, the transition between the pipe behaves weird
 #TODO: Optimize edge cell marking process
-#TODO: Add generate_grid_cells() and mark_edge_cells() to DoubleRectangle 
 #TODO: Fix mark_edge_cells() for triangle with non-zero skewnewss (sometimes particles drop out as the cell marked is only very partially inside the triangle - almost no barrier)
+#TODO: Fix mark_edge_cells() for circle (particles tend to tunnel out of the upper right part of the circle)
+#TODO: Fix mark_edge_cells() for DoubleRectangle (particles tend to wierdly speed down when withing pipe height)
 
 
 class Particle:
@@ -551,7 +552,8 @@ class Circle(Scene):
         # Iterate through all the grid cells
         for i in range(self.grid_width):
             for j in range(self.grid_height):
-                # Calculate the center of the current grid cell (i, j) in grid coordinates
+                self.grid[i][j][2] = True
+                """# Calculate the center of the current grid cell (i, j) in grid coordinates
                 cell_center_x = (i + 0.5) - center_x  # Center relative to the circle's center
                 cell_center_y = (j + 0.5) - center_y  # Center relative to the circle's center
 
@@ -563,29 +565,25 @@ class Circle(Scene):
 
                 # Mark as an edge cell if the distance is within the range of the circle's radius +/- (edge_thickness_cells * cell_size)
                 if self.radius - (edge_thickness_cells * self.cell_size) <= scaled_distance <= self.radius + (edge_thickness_cells * self.cell_size):
-                    self.grid[i][j][2] = True  # Mark this cell as an edge cell
+                    self.grid[i][j][2] = True  # Mark this cell as an edge cell"""
 
 
     def check_wall_collision(self, particle: Particle, dt: float) -> None:
-        """
-        Check and resolve wall collisions with the circular boundary.
-        
-        :param particle: The particle to check for boundary collision.
-        :param dt: Time step for continuous collision detection.
-        """
         distance_to_center = np.linalg.norm(particle.position)
-
-        # Check if the particle is colliding with the circular boundary
-        if distance_to_center + particle.radius >= self.radius:
-            # Calculate the normal direction from the center of the circle
+        if distance_to_center + particle.radius - 1e-3 >= self.radius:
+            # Calculate penetration depth first
+            penetration_depth = (distance_to_center + particle.radius) - self.radius
+            
+            # Normalize normal vector
             normal = particle.position / distance_to_center
+            normal /= np.linalg.norm(normal)
 
-            # Reflect the particle's velocity along the normal direction and apply restitution
+            # Correct position first
+            particle.position -= normal * penetration_depth
+            
+            # Reflect velocity along the normal direction and apply restitution
             particle.velocity -= 2 * particle.restitution * np.dot(particle.velocity, normal) * normal
 
-            # Correct the particle's position to avoid penetrating the boundary
-            penetration_depth = (distance_to_center + particle.radius) - self.radius
-            particle.position -= normal * penetration_depth
 
     
     def add_particle(self, particle: Particle) -> None:
