@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
 import random
+import math
 import numpy as np
 import matplotlib.pyplot as plt
-
+from collections import deque
+from src.tools import poisson_disk_sampling_strict_no_overlap
 
 #TODO: Update the grid structure for the scene so that i it efficiently covers differnt shapes (and not just rectangles)
 #TODO: Fix DoubleRectangle class - when the two boxes are different sizes, the transition between the pipe behaves weird
@@ -10,6 +12,7 @@ import matplotlib.pyplot as plt
 #TODO: Fix mark_edge_cells() for triangle with non-zero skewnewss (sometimes particles drop out as the cell marked is only very partially inside the triangle - almost no barrier)
 #TODO: Fix mark_edge_cells() for circle (particles tend to tunnel out of the upper right part of the circle)
 #TODO: Fix mark_edge_cells() for DoubleRectangle (particles tend to wierdly speed down when withing pipe height)
+
 
 
 class Particle:
@@ -69,12 +72,14 @@ class Scene(ABC):
         self.width = width
         self.height = height
         self.vertical_gravity = vertical_gravity
+
         
         # All of these is set when generate_particles(...) is called 
         self.cell_size = None
         self.grid_width = None 
         self.grid_height = None 
         self.grid = None
+        
         
 
     @abstractmethod
@@ -178,7 +183,7 @@ class Scene(ABC):
 
         # If the particles are moving apart (velocity along normal is positive), skip collision resolution
         if velocity_along_normal > 0:
-            return
+            return 
 
         # Calculate the impulse magnitude for a perfectly elastic collision
         # (taking into account the coefficient of restitution)
@@ -332,7 +337,6 @@ class Scene(ABC):
         Update the positions of all particles and check for wall collisions.
         Apply gravity to each particle.
         """
-
         # Iterate through the grid cells
         for i in range(self.grid_width):
             for j in range(self.grid_height):
@@ -453,14 +457,9 @@ class Rectangle(Scene):
         Add a particle to the rectangle, ensuring it is within bounds.
         
         :param particle: The particle to be added.
-        :raises ValueError: If the particle is out of bounds.
         """
-        if (particle.radius <= particle.position[0] <= self.width - particle.radius and 
-            particle.radius <= particle.position[1] <= self.height - particle.radius):
-            self.particles.append(particle)
-        else:
-            raise ValueError("Particle out of bounds")
-        
+        self.particles.append(particle)
+
     def _is_valid_particle_(self, particle: Particle) -> bool:
         """
         Check if a particle can be placed in the rectangle without overlap or out of bounds.
@@ -476,7 +475,11 @@ class Rectangle(Scene):
                 return False
         return True
     
-    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), speed_scaling: float = 1, max_attempts: int = 1000) -> None:
+    def generate_particles(self, 
+                           num_particles: int, 
+                           radius_range: (float, float),
+                           density_range: (float, float), 
+                           speed_scaling: float = 1) -> None:
         """
         Generate a given number of particles with random positions, velocities, radius, and density.
         
@@ -485,23 +488,26 @@ class Rectangle(Scene):
         :param density_range: Tuple of (min_density, max_density) for particle densities.
         :raises RuntimeError: If unable to place all particles without overlap after many attempts.
         """
-        
-        attempts = 0
-        while len(self.particles) < num_particles and attempts < max_attempts:
-            position = np.array([random.uniform(0, self.width), random.uniform(0, self.height)])
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*speed_scaling
-            radius = random.uniform(*radius_range)
+        bottom_left_x, bottom_left_y = 0, 0
+        shape = ('rectangle', (bottom_left_x, bottom_left_y, self.width, self.height))
+        radii = [random.uniform(*radius_range) for particle in range(num_particles)] 
+        packed_particles_parameters = poisson_disk_sampling_strict_no_overlap(N=num_particles,
+                                                                              radii=radii,
+                                                                              shape=shape)
+        for (x,y,radius) in packed_particles_parameters:
+            position, velocity = np.array([x,y]), np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*speed_scaling
             density = random.uniform(*density_range)
-            new_particle = Particle(position, velocity, 
+            color = tuple(np.random.uniform(0, 1, 3))
+            new_particle = Particle(position=position,
+                                    velocity=velocity, 
                                     color=tuple(np.random.uniform(0, 1, 3)), 
                                     radius=radius, 
                                     density=density,
                                     restitution=self.restitution)
-            if self._is_valid_particle_(new_particle):
-                self.particles.append(new_particle)
-            attempts += 1
-        if attempts >= max_attempts:
-            raise RuntimeError("Unable to place all particles without overlap after many attempts.")
+            if self._is_valid_particle_(new_particle): # Doing extra check to be sure even though it most likely isn't necessary 
+                self.add_particle(new_particle)
+        if len(self.particles) < num_particles:
+            print(f'[WARNING]: only managed to fit {len(self.particles)} in rectangle')
 
         #### Has to fit at least approx 4 of the largest particles in single cell ####
         max_particle_diameter = max([2*p.radius for p in self.particles])
@@ -569,21 +575,25 @@ class Circle(Scene):
 
 
     def check_wall_collision(self, particle: Particle, dt: float) -> None:
+        
+        # Calculate distance from the particle to the center
         distance_to_center = np.linalg.norm(particle.position)
-        if distance_to_center + particle.radius - 1e-3 >= self.radius:
-            # Calculate penetration depth first
-            penetration_depth = (distance_to_center + particle.radius) - self.radius
+        
+        # Check if the particle is colliding with the wall
+        if distance_to_center + particle.radius >= self.radius:
+            # Calculate penetration depth
+            penetration_depth = distance_to_center + particle.radius - self.radius
             
-            # Normalize normal vector
+            # Normal vector (normalized direction from the center to the particle)
             normal = particle.position / distance_to_center
-            normal /= np.linalg.norm(normal)
-
-            # Correct position first
+            
+            # Correct the particle's position to resolve the collision
             particle.position -= normal * penetration_depth
             
-            # Reflect velocity along the normal direction and apply restitution
-            particle.velocity -= 2 * particle.restitution * np.dot(particle.velocity, normal) * normal
-
+            # Reflect the particle's velocity along the normal direction
+            velocity_dot_normal = np.dot(particle.velocity, normal)
+            particle.velocity -= 2 * particle.restitution * velocity_dot_normal * normal
+            
 
     
     def add_particle(self, particle: Particle) -> None:
@@ -594,7 +604,7 @@ class Circle(Scene):
         """
         self.particles.append(particle)
 
-    def is_valid_particle(self, particle: Particle) -> bool:
+    def _is_valid_particle_(self, particle: Particle) -> bool:
         """
         Check if a particle can be placed in the circle without overlapping or exceeding the boundary.
         
@@ -609,7 +619,7 @@ class Circle(Scene):
         return True
 
     def generate_particles(self, num_particles: int, radius_range: (float, float), 
-                           density_range: (float, float), speed_scaling: float = 1, max_attempts: int = 1000) -> None:
+                           density_range: (float, float), speed_scaling: float = 1) -> None:
         """
         Generate a given number of particles in the circular boundary.
         
@@ -618,21 +628,26 @@ class Circle(Scene):
         :param density_range: Tuple of (min_density, max_density) for particle densities.
         :raises RuntimeError: If unable to place all particles without overlap after many attempts.
         """
-        attempts = 0
-        while len(self.particles) < num_particles and attempts < max_attempts:
-            angle = random.uniform(0, 2 * np.pi)
-            distance = random.uniform(0, self.radius)
-            position = np.array([distance * np.cos(angle), distance * np.sin(angle)])
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * speed_scaling
-            radius = random.uniform(*radius_range)
+        center_x, center_y = 0, 0
+        shape = ('circle', (center_x, center_y, self.radius))
+        radii = [random.uniform(*radius_range) for particle in range(num_particles)] 
+        packed_particles_parameters = poisson_disk_sampling_strict_no_overlap(N=num_particles,
+                                                                              radii=radii,
+                                                                              shape=shape)
+        for (x,y,radius) in packed_particles_parameters:
+            position, velocity = np.array([x,y]), np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*speed_scaling
             density = random.uniform(*density_range)
-            new_particle = Particle(position, velocity, color=tuple(np.random.uniform(0, 1, 3)), radius=radius, density=density,
+            color = tuple(np.random.uniform(0, 1, 3))
+            new_particle = Particle(position=position,
+                                    velocity=velocity, 
+                                    color=tuple(np.random.uniform(0, 1, 3)), 
+                                    radius=radius, 
+                                    density=density,
                                     restitution=self.restitution)
-            if self.is_valid_particle(new_particle):
+            if self._is_valid_particle_(new_particle): # Doing extra check to be sure even though it most likely isn't necessary 
                 self.particles.append(new_particle)
-            attempts += 1
-        if attempts >= max_attempts:
-            raise RuntimeError("Unable to place all particles without overlap after many attempts.")
+        if len(self.particles) < num_particles:
+            print(f'[WARNING]: only managed to fit {len(self.particles)} in rectangle')
         
         #### Has to fit at least approx 4 of the largest particles in single cell ####
         max_particle_diameter = max([2*p.radius for p in self.particles])
@@ -983,6 +998,8 @@ class Triangle(Scene):
     def __init__(self, base: float, height: float, skewness: float = 0.0, vertical_gravity: float = 0.0, restitution: float = 1.0) -> None:
         """
         Initialize a triangular scene with specified base, height, and skewness.
+
+        Triangle base is horizontal and lower left corner is at (0,0)
         
         :param base: Base length of the triangle.
         :param height: Height of the triangle.
@@ -1424,3 +1441,6 @@ def line_intersects_rectangle(rect_bottom_left_x: float, rect_bottom_left_y: flo
             else:
                 line_end_x, line_end_y = x, y
                 code2 = compute_code(line_end_x, line_end_y)
+
+
+
