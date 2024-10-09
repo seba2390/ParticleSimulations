@@ -1,3 +1,4 @@
+import numpy as np
 import random
 import math
 from collections import deque
@@ -25,9 +26,9 @@ def poisson_disk_sampling_strict_no_overlap(N: int, radii: List[float], shape: T
             - radius: Radius of the enclosing circle.
         
         - 'triangle': ('triangle', (p1, p2, p3))
-            - p1: Coordinates of the first vertex of the triangle as (x1, y1).
-            - p2: Coordinates of the second vertex of the triangle as (x2, y2).
-            - p3: Coordinates of the third vertex of the triangle as (x3, y3).
+            - p1: Coordinates of lower left vertex of the triangle as (x1, y1).
+            - p2: Coordinates of lower right vertex of the triangle as (x2, y2).
+            - p3: Coordinates of top vertex of the triangle as (x3, y3).
         
         - 'polygon': ('polygon', [(x1, y1), (x2, y2), ..., (xn, yn)])
             - A list of vertices (x, y) defining the polygon. The polygon can have any number of vertices.
@@ -149,8 +150,26 @@ def is_point_in_shape(x: float, y: float, radius: float, shape: Tuple) -> bool:
     :param x: X-coordinate of the circle center.
     :param y: Y-coordinate of the circle center.
     :param radius: Radius of the circle.
-    :param shape: A tuple representing the shape. 
-                  Format: ('rectangle', (x, y, width, height)), ('circle', (x, y, radius)), or similar.
+    :param shape: A tuple representing the shape in which to generate circles. The following shapes are supported:
+    
+        - 'rectangle': ('rectangle', (x, y, width, height))
+            - x: X-coordinate of the bottom-left corner of the rectangle.
+            - y: Y-coordinate of the bottom-left corner of the rectangle.
+            - width: Width of the rectangle.
+            - height: Height of the rectangle.
+        
+        - 'circle': ('circle', (center_x, center_y, radius))
+            - center_x: X-coordinate of the center of the enclosing circle.
+            - center_y: Y-coordinate of the center of the enclosing circle.
+            - radius: Radius of the enclosing circle.
+        
+        - 'triangle': ('triangle', (p1, p2, p3))
+            - p1: Coordinates of lower left vertex of the triangle as (x1, y1).
+            - p2: Coordinates of lower right vertex of the triangle as (x2, y2).
+            - p3: Coordinates of top vertex of the triangle as (x3, y3).
+        
+        - 'polygon': ('polygon', [(x1, y1), (x2, y2), ..., (xn, yn)])
+            - A list of vertices (x, y) defining the polygon. The polygon can have any number of vertices.
     :return: True if the circle is fully inside the shape, False otherwise.
     """
     shape_type = shape[0]
@@ -159,11 +178,10 @@ def is_point_in_shape(x: float, y: float, radius: float, shape: Tuple) -> bool:
         return is_circle_in_rectangle(x, y, radius, shape[1])
     
     elif shape_type == 'triangle':
-        # Placeholder for future implementation
-        pass
+        return is_circle_in_triangle(x,y,radius,shape[1])
     
     elif shape_type == 'polygon':
-        # Placeholder for future implementation
+        #TODO: Placeholder for future implementation
         pass
     
     elif shape_type == 'circle':
@@ -200,6 +218,61 @@ def is_circle_in_circle(x: float, y: float, radius: float, enclosing_circle: Tup
     center_x, center_y, enclosing_radius = enclosing_circle
     dist = distance((x, y), (center_x, center_y))
     return dist + radius <= enclosing_radius
+
+def is_circle_in_triangle(x: float, y: float, radius: float, enclosing_triangle: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]) -> bool:
+    """
+    Check if a circle is fully inside a triangle.
+
+    :param x: X-coordinate of the circle's center.
+    :param y: Y-coordinate of the circle's center.
+    :param radius: Radius of the circle.
+    :param enclosing_triangle: Tuple representing the triangle's vertices (p1, p2, p3).
+    :return: True if the circle is fully inside the triangle, False otherwise.
+    """
+    def point_to_line_distance(point: np.ndarray, line_start: np.ndarray, line_end: np.ndarray) -> float:
+        """
+        Calculate the distance from a point to a line segment.
+        """
+        line_vec = line_end - line_start
+        point_vec = point - line_start
+        line_len = np.linalg.norm(line_vec)
+        line_unitvec = line_vec / line_len
+        t = np.dot(line_unitvec, point_vec / line_len)
+        t = max(0.0, min(1.0, t))  # Project onto the segment
+        nearest = line_start + line_unitvec * t * line_len
+        dist = np.linalg.norm(point - nearest)
+        return dist
+
+    point = np.array([x, y])
+    v1 = np.array(enclosing_triangle[0])
+    v2 = np.array(enclosing_triangle[1])
+    v3 = np.array(enclosing_triangle[2])
+
+    # First, check if the circle's center is inside the triangle
+    def sign(p1, p2, p3):
+        return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+
+    d1 = sign(point, v1, v2)
+    d2 = sign(point, v2, v3)
+    d3 = sign(point, v3, v1)
+
+    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+
+    is_center_inside = not (has_neg and has_pos)
+
+    # Check if the circle's center is inside
+    if is_center_inside:
+        # Now, ensure the circle's radius doesn't overlap with the triangle's edges
+        for edge in [(v1, v2), (v2, v3), (v3, v1)]:
+            if point_to_line_distance(point, edge[0], edge[1]) < radius:
+                return False  # Circle overlaps with an edge
+
+        return True
+
+    return False
+
+
 
 
 def distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
@@ -250,3 +323,83 @@ def get_shape_bounding_box(shape: Tuple) -> Tuple[float, float, float, float]:
 
 
 
+def line_intersects_rectangle(rect_bottom_left_x: float, rect_bottom_left_y: float, rect_top_right_x: float, rect_top_right_y: float, 
+                              line_start_x: float, line_start_y: float, line_end_x: float, line_end_y: float) -> bool:
+    """
+    Check if a line segment intersects with a rectangle using the Axis-Aligned Bounding Box (AABB) method.
+
+    This function uses the Cohen-Sutherland line clipping algorithm to determine if the line segment 
+    defined by the endpoints (line_start_x, line_start_y) and (line_end_x, line_end_y) intersects with the rectangle defined by its 
+    bottom-left corner (rect_bottom_left_x, rect_bottom_left_y) and top-right corner (rect_top_right_x, rect_top_right_y).
+
+    Args:
+        rect_bottom_left_x (float): X-coordinate of the bottom-left corner of the rectangle.
+        rect_bottom_left_y (float): Y-coordinate of the bottom-left corner of the rectangle.
+        rect_top_right_x (float): X-coordinate of the top-right corner of the rectangle.
+        rect_top_right_y (float): Y-coordinate of the top-right corner of the rectangle.
+        line_start_x (float): X-coordinate of the starting point of the line segment.
+        line_start_y (float): Y-coordinate of the starting point of the line segment.
+        line_end_x (float): X-coordinate of the ending point of the line segment.
+        line_end_y (float): Y-coordinate of the ending point of the line segment.
+
+    Returns:
+        bool: True if the line segment intersects the rectangle, False otherwise.
+    """
+    # Ensure the rectangle coordinates are ordered correctly
+    rect_bottom_left_x, rect_top_right_x = min(rect_bottom_left_x, rect_top_right_x), max(rect_bottom_left_x, rect_top_right_x)
+    rect_bottom_left_y, rect_top_right_y = min(rect_bottom_left_y, rect_top_right_y), max(rect_bottom_left_y, rect_top_right_y)
+
+    # Check if line segment is completely outside the rectangle's bounding box
+    if max(line_start_x, line_end_x) < rect_bottom_left_x or min(line_start_x, line_end_x) > rect_top_right_x or max(line_start_y, line_end_y) < rect_bottom_left_y or min(line_start_y, line_end_y) > rect_top_right_y:
+        return False
+
+    # Check for intersection by using Cohen-Sutherland line clipping algorithm
+    # Define region codes for each point of the line segment
+    INSIDE = 0  # 0000
+    LEFT = 1    # 0001
+    RIGHT = 2   # 0010
+    BOTTOM = 4  # 0100
+    TOP = 8     # 1000
+
+    def compute_code(x: float, y: float) -> int:
+        code = INSIDE
+        if x < rect_bottom_left_x:
+            code |= LEFT
+        elif x > rect_top_right_x:
+            code |= RIGHT
+        if y < rect_bottom_left_y:
+            code |= BOTTOM
+        elif y > rect_top_right_y:
+            code |= TOP
+        return code
+
+    code1 = compute_code(line_start_x, line_start_y)
+    code2 = compute_code(line_end_x, line_end_y)
+
+    while True:
+        if code1 == 0 and code2 == 0:
+            return True  # Trivially inside
+        elif code1 & code2 != 0:
+            return False  # Trivially outside
+        else:
+            # Clip the line to the rectangle's bounding box
+            code_out = code1 if code1 != 0 else code2
+            if code_out & TOP:
+                x = line_start_x + (line_end_x - line_start_x) * (rect_top_right_y - line_start_y) / (line_end_y - line_start_y)
+                y = rect_top_right_y
+            elif code_out & BOTTOM:
+                x = line_start_x + (line_end_x - line_start_x) * (rect_bottom_left_y - line_start_y) / (line_end_y - line_start_y)
+                y = rect_bottom_left_y
+            elif code_out & RIGHT:
+                y = line_start_y + (line_end_y - line_start_y) * (rect_top_right_x - line_start_x) / (line_end_x - line_start_x)
+                x = rect_top_right_x
+            elif code_out & LEFT:
+                y = line_start_y + (line_end_y - line_start_y) * (rect_bottom_left_x - line_start_x) / (line_end_x - line_start_x)
+                x = rect_bottom_left_x
+
+            if code_out == code1:
+                line_start_x, line_start_y = x, y
+                code1 = compute_code(line_start_x, line_start_y)
+            else:
+                line_end_x, line_end_y = x, y
+                code2 = compute_code(line_end_x, line_end_y)

@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
 import random
-import math
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import deque
-from src.tools import poisson_disk_sampling_strict_no_overlap
+import matplotlib.colors as mcolors
+from src.tools import poisson_disk_sampling_strict_no_overlap, line_intersects_rectangle
 
 #TODO: Update the grid structure for the scene so that i it efficiently covers differnt shapes (and not just rectangles)
 #TODO: Fix DoubleRectangle class - when the two boxes are different sizes, the transition between the pipe behaves weird
@@ -12,8 +11,16 @@ from src.tools import poisson_disk_sampling_strict_no_overlap
 #TODO: Fix mark_edge_cells() for triangle with non-zero skewnewss (sometimes particles drop out as the cell marked is only very partially inside the triangle - almost no barrier)
 #TODO: Fix mark_edge_cells() for circle (particles tend to tunnel out of the upper right part of the circle)
 #TODO: Fix mark_edge_cells() for DoubleRectangle (particles tend to wierdly speed down when withing pipe height)
+#TODO: Fix particle generation for triangle with skewness significantly away from 0 (but still in [-1;1])
 
 
+__available_color_lists_ = [mcolors.CSS4_COLORS, mcolors.TABLEAU_COLORS]
+index = 0
+COLORS = list(__available_color_lists_[index].keys())
+# Removing white colors
+for color in COLORS:
+    if color.find('white') != -1:
+        COLORS.remove(color)
 
 class Particle:
     def __init__(self, position: np.ndarray, velocity: np.ndarray, color: str = 'black', 
@@ -500,7 +507,7 @@ class Rectangle(Scene):
             color = tuple(np.random.uniform(0, 1, 3))
             new_particle = Particle(position=position,
                                     velocity=velocity, 
-                                    color=tuple(np.random.uniform(0, 1, 3)), 
+                                    color=COLORS[np.random.randint(len(COLORS))], 
                                     radius=radius, 
                                     density=density,
                                     restitution=self.restitution)
@@ -637,10 +644,9 @@ class Circle(Scene):
         for (x,y,radius) in packed_particles_parameters:
             position, velocity = np.array([x,y]), np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*speed_scaling
             density = random.uniform(*density_range)
-            color = tuple(np.random.uniform(0, 1, 3))
             new_particle = Particle(position=position,
                                     velocity=velocity, 
-                                    color=tuple(np.random.uniform(0, 1, 3)), 
+                                    color=COLORS[np.random.randint(len(COLORS))], 
                                     radius=radius, 
                                     density=density,
                                     restitution=self.restitution)
@@ -1241,7 +1247,12 @@ class Triangle(Scene):
         else:
             raise ValueError("Particle out of bounds")
 
-    def generate_particles(self, num_particles: int, radius_range: (float, float), density_range: (float, float), speed_scaling: float = 1, max_attempts: int = 1000) -> None:
+    def generate_particles(self, 
+                           num_particles: int, 
+                           radius_range: (float, float), 
+                           density_range: (float, float), 
+                           speed_scaling: float = 1,
+                           max_attempts: int = 1000) -> None:
         """
         Generate a given number of particles with random positions, velocities, radius, and density within the triangle.
         
@@ -1250,32 +1261,38 @@ class Triangle(Scene):
         :param density_range: Tuple of (min_density, max_density) for particle densities.
         :raises RuntimeError: If unable to place all particles without overlap after many attempts.
         """
-        attempts = 0
-        while len(self.particles) < num_particles and attempts < max_attempts:
-            position = self._generate_random_position()
-            velocity = np.array([random.uniform(-1, 1), random.uniform(-1, 1)]) * speed_scaling
-            radius = random.uniform(*radius_range)
+        lower_left, lower_right, top = tuple(self.vertices[0]), tuple(self.vertices[1]), tuple(self.vertices[2]) 
+        shape = ('triangle', (lower_left, lower_right, top))
+        radii = [random.uniform(*radius_range) for particle in range(num_particles)] 
+        packed_particles_parameters = poisson_disk_sampling_strict_no_overlap(N=num_particles,
+                                                                              radii=radii,
+                                                                              shape=shape)
+        for (x,y,radius) in packed_particles_parameters:
+            position, velocity = np.array([x,y]), np.array([random.uniform(-1, 1), random.uniform(-1, 1)])*speed_scaling
             density = random.uniform(*density_range)
-            new_particle = Particle(position, velocity, color=tuple(np.random.uniform(0, 1, 3)), radius=radius, density=density,
+            new_particle = Particle(position=position,
+                                    velocity=velocity, 
+                                    color=COLORS[np.random.randint(len(COLORS))], 
+                                    radius=radius, 
+                                    density=density,
                                     restitution=self.restitution)
-            if self._is_valid_particle_(new_particle):
+            if self._is_valid_particle_(new_particle): # Doing extra check to be sure even though it most likely isn't necessary 
                 self.particles.append(new_particle)
-            attempts += 1
-        if attempts >= max_attempts:
-            raise RuntimeError("Unable to place all particles without overlap after many attempts.")
+        if len(self.particles) < num_particles:
+            if len(self.particles) == 0:
+                raise RuntimeError(f"didn't create any particles - try adjust skewness closer to 0. ")
+            print(f'[WARNING]: only managed to fit {len(self.particles)} in rectangle')
+        
 
         #### Has to fit at least approx 4 of the largest particles in single cell ####
         max_particle_diameter = max([2*p.radius for p in self.particles])
         self.cell_size = 2.35 * max_particle_diameter
         self.grid_width = int(np.ceil(self.width / self.cell_size))
         self.grid_height = int(np.ceil(self.height / self.cell_size))
-        print(self.grid_height)
         # Initialize the grid
         self.grid = self.generate_grid_cells()
         # Mark edge cells after initializing the grid
         self.mark_edge_cells()
-
-
 
 
 
@@ -1361,86 +1378,7 @@ def draw_grid(ax,scene_obj,lw:float = 0.2):
 
 
 
-def line_intersects_rectangle(rect_bottom_left_x: float, rect_bottom_left_y: float, rect_top_right_x: float, rect_top_right_y: float, 
-                              line_start_x: float, line_start_y: float, line_end_x: float, line_end_y: float) -> bool:
-    """
-    Check if a line segment intersects with a rectangle using the Axis-Aligned Bounding Box (AABB) method.
 
-    This function uses the Cohen-Sutherland line clipping algorithm to determine if the line segment 
-    defined by the endpoints (line_start_x, line_start_y) and (line_end_x, line_end_y) intersects with the rectangle defined by its 
-    bottom-left corner (rect_bottom_left_x, rect_bottom_left_y) and top-right corner (rect_top_right_x, rect_top_right_y).
-
-    Args:
-        rect_bottom_left_x (float): X-coordinate of the bottom-left corner of the rectangle.
-        rect_bottom_left_y (float): Y-coordinate of the bottom-left corner of the rectangle.
-        rect_top_right_x (float): X-coordinate of the top-right corner of the rectangle.
-        rect_top_right_y (float): Y-coordinate of the top-right corner of the rectangle.
-        line_start_x (float): X-coordinate of the starting point of the line segment.
-        line_start_y (float): Y-coordinate of the starting point of the line segment.
-        line_end_x (float): X-coordinate of the ending point of the line segment.
-        line_end_y (float): Y-coordinate of the ending point of the line segment.
-
-    Returns:
-        bool: True if the line segment intersects the rectangle, False otherwise.
-    """
-    # Ensure the rectangle coordinates are ordered correctly
-    rect_bottom_left_x, rect_top_right_x = min(rect_bottom_left_x, rect_top_right_x), max(rect_bottom_left_x, rect_top_right_x)
-    rect_bottom_left_y, rect_top_right_y = min(rect_bottom_left_y, rect_top_right_y), max(rect_bottom_left_y, rect_top_right_y)
-
-    # Check if line segment is completely outside the rectangle's bounding box
-    if max(line_start_x, line_end_x) < rect_bottom_left_x or min(line_start_x, line_end_x) > rect_top_right_x or max(line_start_y, line_end_y) < rect_bottom_left_y or min(line_start_y, line_end_y) > rect_top_right_y:
-        return False
-
-    # Check for intersection by using Cohen-Sutherland line clipping algorithm
-    # Define region codes for each point of the line segment
-    INSIDE = 0  # 0000
-    LEFT = 1    # 0001
-    RIGHT = 2   # 0010
-    BOTTOM = 4  # 0100
-    TOP = 8     # 1000
-
-    def compute_code(x: float, y: float) -> int:
-        code = INSIDE
-        if x < rect_bottom_left_x:
-            code |= LEFT
-        elif x > rect_top_right_x:
-            code |= RIGHT
-        if y < rect_bottom_left_y:
-            code |= BOTTOM
-        elif y > rect_top_right_y:
-            code |= TOP
-        return code
-
-    code1 = compute_code(line_start_x, line_start_y)
-    code2 = compute_code(line_end_x, line_end_y)
-
-    while True:
-        if code1 == 0 and code2 == 0:
-            return True  # Trivially inside
-        elif code1 & code2 != 0:
-            return False  # Trivially outside
-        else:
-            # Clip the line to the rectangle's bounding box
-            code_out = code1 if code1 != 0 else code2
-            if code_out & TOP:
-                x = line_start_x + (line_end_x - line_start_x) * (rect_top_right_y - line_start_y) / (line_end_y - line_start_y)
-                y = rect_top_right_y
-            elif code_out & BOTTOM:
-                x = line_start_x + (line_end_x - line_start_x) * (rect_bottom_left_y - line_start_y) / (line_end_y - line_start_y)
-                y = rect_bottom_left_y
-            elif code_out & RIGHT:
-                y = line_start_y + (line_end_y - line_start_y) * (rect_top_right_x - line_start_x) / (line_end_x - line_start_x)
-                x = rect_top_right_x
-            elif code_out & LEFT:
-                y = line_start_y + (line_end_y - line_start_y) * (rect_bottom_left_x - line_start_x) / (line_end_x - line_start_x)
-                x = rect_bottom_left_x
-
-            if code_out == code1:
-                line_start_x, line_start_y = x, y
-                code1 = compute_code(line_start_x, line_start_y)
-            else:
-                line_end_x, line_end_y = x, y
-                code2 = compute_code(line_end_x, line_end_y)
 
 
 
