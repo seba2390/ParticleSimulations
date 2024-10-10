@@ -42,9 +42,11 @@ class Particle:
         self.restitution = restitution
         self.mass = self.calculate_mass()
         self.path_history = []  # Stores positions over time
+        self.speed_history = [] # Stores speeds over time
 
-        # Add the initial position to the history
+        # Add the initial position and velocity to the history
         self.path_history.append(self.position.copy())
+        self.speed_history.append(np.linalg.norm(self.velocity))
 
     def calculate_mass(self) -> float:
         """
@@ -62,8 +64,9 @@ class Particle:
         :param dt: Time step for the movement.
         """
         self.position += self.velocity * dt
-        # Record the new position after each move
+        # Record the new position and velocity after each move
         self.path_history.append(self.position.copy())
+        self.speed_history.append(np.linalg.norm(self.velocity))
 
 
 class Scene(ABC):
@@ -96,6 +99,7 @@ class Scene(ABC):
             Implemented in derived classes like Rectangle, Circle, or Triangle.
             """
             pass
+    
     
     @abstractmethod
     def generate_grid_cells(self) -> None:
@@ -379,6 +383,7 @@ class Scene(ABC):
 
             # Move the particle
             particle.move(dt)"""
+        
 
 
     def simulate(self, n_steps: int, dt: float) -> None:
@@ -454,9 +459,9 @@ class Rectangle(Scene):
             particle.position[1] = self.height - particle.radius - penetration * particle.restitution
             particle.velocity[1] = -particle.velocity[1] * particle.restitution
 
-        # Update position based on remaining time step
-        remaining_dt = dt * (1 - particle.restitution)
-        particle.position += particle.velocity * remaining_dt
+        # Update position based on the entire time step and new velocity
+        particle.position += particle.velocity * dt
+
 
 
     def add_particle(self, particle: Particle) -> None:
